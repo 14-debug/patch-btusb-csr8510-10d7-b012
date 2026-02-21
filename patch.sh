@@ -1,6 +1,7 @@
 #!/bin/bash
+
 # Patches btusb.c to add fake CSR8510 A10 support (10d7:b012)
-# Usage: sudo ./patch.sh
+# Usage: sudo ./patch-btusb-csr8510.sh
 set -euo pipefail
 
 KVER=$(uname -r)
@@ -18,6 +19,15 @@ PRODUCT="0xb012"
 cleanup() { rm -rf "$BUILDDIR"; }
 trap cleanup EXIT
 
+insert_after() {
+    local file=$1 line=$2 text=$3 tmp
+    tmp=$(mktemp)
+    head -n "$line" "$file" > "$tmp"
+    printf '%s\n' "$text" >> "$tmp"
+    tail -n +"$((line + 1))" "$file" >> "$tmp"
+    mv "$tmp" "$file"
+}
+
 echo "==> Downloading btusb.c and headers (${KERNEL_TAG})..."
 BASE_URL="https://raw.githubusercontent.com/torvalds/linux/${KERNEL_TAG}/drivers/bluetooth"
 for f in btusb.c btintel.h btbcm.h btrtl.h btmtk.h; do
@@ -27,25 +37,22 @@ done
 echo "==> Patching for ${VENDOR}:${PRODUCT}..."
 cd "$BUILDDIR"
 
-# Patch 1: quirks_table
-sed -i '/{ USB_DEVICE(0x0a12, 0x0001), .driver_info = BTUSB_CSR },/a\\n\t/* Fake CSR clone - CSR8510 A10 */\n\t{ USB_DEVICE('"$VENDOR"', '"$PRODUCT"'), .driver_info = BTUSB_CSR },' btusb.c
+# Patch 1: quirks_table — register device as CSR
+L=$(grep -n '{ USB_DEVICE(0x0a12, 0x0001), .driver_info = BTUSB_CSR },' btusb.c | head -1 | cut -d: -f1)
+insert_after btusb.c "$L" "$(printf '\n\t/* Fake CSR clone - CSR8510 A10 */\n\t{ USB_DEVICE(%s, %s), .driver_info = BTUSB_CSR },' "$VENDOR" "$PRODUCT")"
 
 # Patch 2: interrupt transfer size
-sed -i 's/if (le16_to_cpu(data->udev->descriptor.idVendor)  == 0x0a12 &&$/if ((le16_to_cpu(data->udev->descriptor.idVendor)  == 0x0a12 \&\&/' btusb.c
-sed -i '/le16_to_cpu(data->udev->descriptor.idProduct) == 0x0001)/{
-    /sort-transter/!{
-        s/)$/)) ||/
-        a\\t    (le16_to_cpu(data->udev->descriptor.idVendor)  == '"$VENDOR"' \&\&\n\t     le16_to_cpu(data->udev->descriptor.idProduct) == '"$PRODUCT"'))
-    }
-}' btusb.c
+L=$(grep -n 'le16_to_cpu(data->udev->descriptor.idVendor)  == 0x0a12' btusb.c | head -1 | cut -d: -f1)
+sed -i "${L}s/if (/if ((/" btusb.c
+sed -i "$((L+1))s/== 0x0001)/== 0x0001) ||/" btusb.c
+insert_after btusb.c "$((L+1))" "$(printf '\t    (le16_to_cpu(data->udev->descriptor.idVendor)  == %s &&\n\t     le16_to_cpu(data->udev->descriptor.idProduct) == %s))' "$VENDOR" "$PRODUCT")"
 
 # Patch 3: setup function
-sed -i '/Fake CSR devices with broken commands/{
-    n
-    s/if (le16_to_cpu(udev->descriptor.idVendor)  == 0x0a12 &&/if ((le16_to_cpu(udev->descriptor.idVendor)  == 0x0a12 \&\&/
-    n
-    s/le16_to_cpu(udev->descriptor.idProduct) == 0x0001)/le16_to_cpu(udev->descriptor.idProduct) == 0x0001) ||\n\t\t    (le16_to_cpu(udev->descriptor.idVendor)  == '"$VENDOR"' \&\&\n\t\t     le16_to_cpu(udev->descriptor.idProduct) == '"$PRODUCT"'))/
-}' btusb.c
+L=$(grep -n 'Fake CSR devices with broken commands' btusb.c | head -1 | cut -d: -f1)
+L=$((L+1))
+sed -i "${L}s/if (/if ((/" btusb.c
+sed -i "$((L+1))s/== 0x0001)/== 0x0001) ||/" btusb.c
+insert_after btusb.c "$((L+1))" "$(printf '\t\t    (le16_to_cpu(udev->descriptor.idVendor)  == %s &&\n\t\t     le16_to_cpu(udev->descriptor.idProduct) == %s))' "$VENDOR" "$PRODUCT")"
 
 echo "==> Compiling module..."
 cat > Makefile <<'EOF'
@@ -59,7 +66,7 @@ all:
         $(MAKE) -C $(KDIR) M=$(PWD) modules
 EOF
 
-make KVER="$KVER" 2>&1 | tail -5
+make KVER="$KVER" 2>&1
 test -f btusb.ko || { echo "Error: compilation failed"; exit 1; }
 
 echo "==> Installing module..."
