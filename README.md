@@ -29,7 +29,7 @@ sudo dnf install kernel-devel gcc make curl zstd
 ```bash
 git clone https://github.com/ewood/btusb-csr8510-fix.git
 cd btusb-csr8510-fix
-sudo ./patch-btusb-csr8510.sh
+sudo ./patch.sh
 ```
 
 The script will:
