@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Patches btusb.c to add fake CSR8510 A10 support (10d7:b012)
-# Usage: sudo ./patch-btusb-csr8510.sh
+# Usage: sudo ./patch.sh
 set -euo pipefail
 
 KVER=$(uname -r)
